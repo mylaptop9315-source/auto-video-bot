@@ -8,12 +8,18 @@ app = Flask(__name__)
 def home():
     return "✅ Bot is running on Render!"
 
-if __name__ == '__main__':
-    print("✅ Bot is starting...")
+def background_task():
     while True:
         print("🤖 Bot is running on Render...")
         time.sleep(10)
 
-    # नीचे की 2 lines से Render को port मिलेगा
+if __name__ == '__main__':
+    print("✅ Bot is starting...")
+
+    # Background task start karo
+    import threading
+    threading.Thread(target=background_task, daemon=True).start()
+
+    # Flask web server start karo (Render ko port milega)
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
