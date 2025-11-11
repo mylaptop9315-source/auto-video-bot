@@ -39,7 +39,7 @@ from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filte
 # --- Configuration ---
 TELEGRAM_TOKEN = os.environ.get("8269322609:AAElFFE5YJ-ehl47CXq0JpjYug-zSpiO7NY")
 if not TELEGRAM_TOKEN:
-    raise RuntimeError("8269322609:AAElFFE5YJ-ehl47CXq0JpjYug-zSpiO7NY")
+    raise RuntimeError("❌ TELEGRAM_TOKEN not found! Please set it in Render Environment Variables.")
 
 # Temporary folder
 TMP_DIR = "tmp_files"
