@@ -2,4 +2,5 @@ flask
 requests
 python-telegram-bot==20.3
 gTTS
-moviepy
+moviepy==1.0.3
+imageio[ffmpeg]
