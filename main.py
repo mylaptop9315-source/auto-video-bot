@@ -1,85 +1,130 @@
 import os
 import uuid
-import asyncio
 import requests
-from flask import Flask
+from flask import Flask, request
 from gtts import gTTS
 from moviepy.editor import ImageClip, AudioFileClip
-from telegram import Update
-from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
+from telegram import Bot, Update
 
-# --- Config ---
+# Google API imports
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
+
+# --- CONFIG ---
 TELEGRAM_TOKEN = "8269322609:AAElFFE5YJ-ehl47CXq0JpjYug-zSpiO7NY"
+WEBHOOK_URL = "https://auto-video-bot.onrender.com/webhook"
 TMP_DIR = "tmp_files"
 os.makedirs(TMP_DIR, exist_ok=True)
 
-# --- Flask app ---
-web_app = Flask(__name__)
+bot = Bot(token=TELEGRAM_TOKEN)
+SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
 
-@web_app.route('/')
+app = Flask(__name__)
+
+# --- Helper: Authenticate YouTube ---
+def get_youtube_service():
+    creds = None
+    if os.path.exists("token.json"):
+        creds = Credentials.from_authorized_user_file("token.json", SCOPES)
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file("client_secret.json", SCOPES)
+            creds = flow.run_local_server(port=0)
+        with open("token.json", "w") as token:
+            token.write(creds.to_json())
+    return build("youtube", "v3", credentials=creds)
+
+# --- Flask Routes ---
+@app.route('/')
 def index():
-    return "✅ Auto Video Bot is running fine on Render!"
+    return "✅ Auto Video Bot (with YouTube Upload) Running!"
 
-# --- Telegram bot handler ---
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
+@app.route('/setwebhook')
+def set_webhook():
+    s = bot.set_webhook(WEBHOOK_URL)
+    return f"Webhook set: {s}"
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    update = Update.de_json(request.get_json(force=True), bot)
     chat_id = update.effective_chat.id
-    await context.bot.send_message(chat_id=chat_id, text="🎬 Received — making your video...")
+    text = update.message.text if update.message else ""
 
-    uid = uuid.uuid4().hex
-    audio_path = os.path.join(TMP_DIR, f"{uid}.mp3")
-    bg_path = os.path.join(TMP_DIR, f"{uid}.jpg")
-    video_path = os.path.join(TMP_DIR, f"{uid}.mp4")
+    if not text:
+        return "no message", 200
 
     try:
-        # Text to Speech
-        gTTS(text=text, lang='hi').save(audio_path)
+        bot.send_message(chat_id=chat_id, text="🎬 Received! Creating video...")
 
-        # Random background image
+        # Unique IDs
+        uid = uuid.uuid4().hex
+        audio_path = os.path.join(TMP_DIR, f"{uid}.mp3")
+        image_path = os.path.join(TMP_DIR, f"{uid}.jpg")
+        video_path = os.path.join(TMP_DIR, f"{uid}.mp4")
+
+        # Text → Audio
+        tts = gTTS(text=text, lang="hi")
+        tts.save(audio_path)
+
+        # Background Image
         img = requests.get("https://picsum.photos/1280/720", timeout=10)
-        with open(bg_path, "wb") as f:
+        with open(image_path, "wb") as f:
             f.write(img.content)
 
-        # Combine image and audio
-        audio_clip = AudioFileClip(audio_path)
-        clip = ImageClip(bg_path).set_duration(audio_clip.duration).set_audio(audio_clip)
-        clip.write_videofile(video_path, codec='libx264', audio_codec='aac', verbose=False, logger=None)
+        # Make Video
+        audio = AudioFileClip(audio_path)
+        clip = ImageClip(image_path).set_duration(audio.duration).set_fps(24).set_audio(audio)
+        clip.write_videofile(video_path, codec="libx264", audio_codec="aac", verbose=False, logger=None)
 
-        # Send back to Telegram
-        with open(video_path, 'rb') as vf:
-            await context.bot.send_video(chat_id=chat_id, video=vf)
+        # Send to Telegram
+        with open(video_path, "rb") as vf:
+            bot.send_video(chat_id=chat_id, video=vf)
 
-        await context.bot.send_message(chat_id=chat_id, text="✅ Done! Your video is ready.")
+        bot.send_message(chat_id=chat_id, text="✅ Video ready! Uploading to YouTube...")
+
+        # Upload to YouTube
+        youtube = get_youtube_service()
+        request_body = {
+            "snippet": {
+                "categoryId": "22",
+                "title": f"Auto Generated Video - {uid[:6]}",
+                "description": f"Video created automatically from Telegram text: {text[:80]}...",
+                "tags": ["auto", "bot", "gtts", "python"]
+            },
+            "status": {
+                "privacyStatus": "public"
+            }
+        }
+
+        upload = youtube.videos().insert(
+            part="snippet,status",
+            body=request_body,
+            media_body=video_path
+        )
+        upload_response = upload.execute()
+        video_id = upload_response.get("id")
+
+        yt_link = f"https://www.youtube.com/watch?v={video_id}"
+        bot.send_message(chat_id=chat_id, text=f"🚀 Uploaded to YouTube!\n{yt_link}")
+
     except Exception as e:
-        await context.bot.send_message(chat_id=chat_id, text=f"⚠️ Error: {e}")
+        bot.send_message(chat_id=chat_id, text=f"⚠️ Error: {e}")
         print("Error:", e)
     finally:
-        for p in (audio_path, bg_path, video_path):
+        for p in [audio_path, image_path, video_path]:
             if os.path.exists(p):
-                os.remove(p)
+                try:
+                    os.remove(p)
+                except:
+                    pass
 
-async def start_bot():
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("🤖 Telegram bot started polling...")
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling()
-    # Keep bot alive forever
-    await asyncio.Event().wait()
+    return "ok", 200
 
-def start_web():
-    port = int(os.environ.get("PORT", 5000))
-    web_app.run(host="0.0.0.0", port=port, use_reloader=False)
 
 if __name__ == "__main__":
-    # Run both Flask and Telegram in same asyncio loop safely
-    loop = asyncio.get_event_loop()
-    loop.create_task(start_bot())
-
-    # Run Flask (non-blocking)
-    import threading
-    threading.Thread(target=start_web, daemon=True).start()
-
-    print("🚀 Bot + Web server are both running...")
-    loop.run_forever()
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
